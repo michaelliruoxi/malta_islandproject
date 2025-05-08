@@ -1,0 +1,1037 @@
+library(shiny)
+library(shinydashboard)
+library(leaflet)
+library(ggplot2)
+library(tidyverse)
+library(scales)
+library(DT)
+library(readr)
+
+# Define Key Facts
+# Climate Facts
+climate_facts <- list(
+  "Malta has a Mediterranean climate with hot, dry summers and mild, rainy winters." = "Britannica.com, 2025",
+  "The annual rainfall is approximately 22 inches (550 mm), with over 75% falling between October and March." = "Britannica.com, 2025",
+  "Average annual temperature is in the mid-60s F (about 19°C), with monthly averages ranging from 12°C to 29°C." = "Britannica.com, 2025",
+  "The country experiences several distinctive winds, including the northwesterly (majjistral), northeasterly (grigal), and southeasterly (xlokk)." = "Britannica.com, 2025"
+)
+
+# Geography Facts
+geography_facts <- list(
+  "Malta consists of an archipelago of five islands, with only the three largest (Malta, Gozo, and Comino) being inhabited." = "Britannica.com, 2025",
+  "Malta is located about 80 km south of Sicily and 284 km east of Tunisia." = "Wikipedia, 2025",
+  "The islands are dominated by limestone formations with steep coastal cliffs indented by bays and coves." = "Britannica.com, 2025",
+  "With a total area of 316 km², Malta is the world's tenth-smallest country by area." = "Wikipedia, 2025",
+  "The highest point is Ta' Dmejrek at 253 meters (830 feet) above sea level." = "Britannica.com, 2025"
+)
+
+# Demographic Facts
+demographic_facts <- list(
+  "Malta is one of the most densely populated countries in the world with approximately 1,265 inhabitants per square kilometer." = "Wikipedia, 2025",
+  "The current population is around 542,000 people." = "Wikipedia, 2025",
+  "The median age in Malta is 41.1 years, indicating an aging population trend." = "Worldometers, 2025",
+  "Approximately 95% of Malta is classified as urban area." = "Wikipedia, 2025",
+  "Since 2000, the population has increasingly shifted toward an older demographic." = "Wikipedia, 2025"
+)
+
+# Economic Facts
+economic_facts <- list(
+  "Malta has an advanced, high-income economy according to the IMF." = "Wikipedia, 2025",
+  "Tourism is a major economic contributor, accounting for approximately 15% of GDP directly." = "Wikipedia, 2025",
+  "Other key economic sectors include financial services, online gaming, and manufacturing." = "Wikipedia, 2025",
+  "Malta produces only about 20% of its food needs and has limited freshwater supplies." = "Wikipedia, 2025",
+  "Malta joined the European Union in 2004 and adopted the Euro in 2008." = "Wikipedia, 2025",
+  "In 2023, Malta's GDP per capita (PPP) was approximately €39,500, well above the EU average." = "European Union, 2025"
+)
+
+# Cultural Facts
+cultural_facts <- list(
+  "Malta has more than 360 churches across its islands, averaging one church per 1,000 residents." = "Wikipedia, 2025",
+  "Roman Catholicism is the state religion, but there is freedom of religious belief." = "Britannica.com, 2025",
+  "Maltese and English are the official languages, with Maltese being the only Semitic language written in Latin script." = "Britannica.com, 2025",
+  "Malta's culture has been influenced by various societies throughout centuries, including Phoenicians, Romans, Arabs, Normans, and British." = "Wikipedia, 2025",
+  "The parish church is the architectural and geographic focal point of every Maltese town and village." = "Wikipedia, 2025"
+)
+
+# Historical Facts
+historical_facts <- list(
+  "Malta has been inhabited since approximately 5900 BCE." = "Wikipedia, 2025",
+  "The islands were ruled by the Knights of St. John from 1530 to 1798." = "Wikipedia, 2025",
+  "Malta was a British colony from 1800 until independence in 1964." = "Britannica.com, 2025",
+  "The island played a crucial strategic role in World War II and was awarded the George Cross for bravery in 1942." = "Britannica.com, 2025",
+  "Malta became a republic on December 13, 1974." = "Britannica.com, 2025"
+)
+
+
+read_wb_data <- function(filepath, country = "Malta") {
+  # read the file, ignoring the 4 metadata rows World-Bank files prepend
+  df <- readr::read_csv(
+    file   = filepath,
+    skip   = 4,            # jump over metadata
+    show_col_types = FALSE # silence the column-type message
+  )
+  
+  # keep only the requested country (default = Malta)
+  out <- df %>%
+    dplyr::filter(`Country Name` == country)
+  
+  # make syntactically-valid column names so dplyr/ggplot don’t complain
+  names(out) <- make.names(names(out), unique = TRUE)
+  
+  out
+}
+
+# load both files
+population_male   <- read_wb_data("data/population_male.csv")
+population_female <- read_wb_data("data/population_female.csv")
+
+
+process_population_data <- function() {
+  pivot_one <- function(df, label) {
+    df %>%
+      select(-c(Country.Name, Country.Code, Indicator.Name, Indicator.Code)) %>%
+      pivot_longer(
+        cols      = everything(),
+        names_to  = "Year",
+        values_to = "Value"
+      ) %>%
+      mutate(
+        Year   = as.numeric(gsub("^X", "", Year)),
+        Gender = label
+      ) %>%
+      filter(!is.na(Year))
+  }
+  
+  bind_rows(
+    pivot_one(population_male,   "Male"),
+    pivot_one(population_female, "Female")
+  )
+}
+
+malta_population <- process_population_data()
+
+
+read_life_exp <- function(filepath, 
+                          countries = c("Malta", "Cyprus")) {
+  df <- readr::read_csv(
+    file   = filepath,
+    skip   = 4,            # World-Bank files: 4 metadata rows
+    show_col_types = FALSE
+  )
+  
+  wanted <- dplyr::filter(df, `Country Name` %in% countries)
+  
+  missing <- setdiff(countries, wanted$`Country Name`)
+  if (length(missing))
+    warning("Not found in file: ", paste(missing, collapse = ", "))
+  
+  # reshape to Year-Value format
+  tidy_le <- wanted |>
+    tidyr::pivot_longer(
+      cols  = tidyselect::matches("^[0-9]{4}$"),
+      names_to  = "Year",
+      values_to = "Value",
+      values_drop_na = TRUE
+    ) |>
+    dplyr::mutate(
+      Year    = as.integer(Year),
+      Country = `Country Name`
+    ) |>
+    dplyr::select(Year, Country, Value)
+  
+  tidy_le
+}
+
+mediterranean_countries <- c("Malta", "Cyprus")
+mediterranean_le <- read_life_exp("data/life_expectancy.csv",
+                                  mediterranean_countries)
+
+read_gdp <- function(filepath,
+                     countries   = c("Malta", "Cyprus"),
+                     to_billions = TRUE) {
+  
+  # World-Bank files begin with 4 metadata rows
+  df <- readr::read_csv(
+    file   = filepath,
+    skip   = 4,
+    show_col_types = FALSE
+  )
+  
+  # keep only the countries we care about
+  wanted <- dplyr::filter(df, `Country Name` %in% countries)
+  
+  # pivot the wide year-columns into tidy long form
+  tidy_gdp <- wanted |>
+    tidyr::pivot_longer(
+      cols       = tidyselect::matches("^[0-9]{4}$"),
+      names_to   = "Year",
+      values_to  = "GDP",
+      values_drop_na = TRUE
+    ) |>
+    dplyr::mutate(
+      Year    = as.integer(Year),
+      Country = `Country Name`,
+      # optional: convert to billions for a nicer axis
+      GDP     = if (to_billions) GDP / 1e9 else GDP
+    ) |>
+    dplyr::select(Year, Country, GDP)
+  
+  tidy_gdp
+}
+
+mediterranean_gdp <- read_gdp("data/gdp.csv", mediterranean_countries)
+
+
+# UI Definition
+ui <- dashboardPage(
+  skin = "blue",
+  
+  dashboardHeader(title = "Malta Overview", titleWidth = 250),
+  
+  dashboardSidebar(
+    sidebarMenu(
+      id = "Sidebar",
+      
+      ### MENUS
+      menuItem("Homepage", tabName = "homepage", icon = icon("home")),
+      menuItem("General Description", tabName = "general", icon = icon("info-circle"), startExpanded = TRUE,
+               menuSubItem("Map", tabName = "map", icon = icon("map-marker")),
+               menuSubItem("Key Facts", tabName = "facts", icon = icon("key")),
+               menuSubItem("Narrative", tabName = "narrative", icon = icon("align-left"))
+      ),
+      menuItem("Key Demographics", tabName = "demographics", icon = icon("globe")),
+      menuItem("Regional Comparison", tabName = "comparison", icon = icon("chart-bar")),
+      menuItem("SWOT Analysis", tabName = "swot", icon = icon("table")),
+      menuItem("Reference & Special Thanks", tabName = "thanks", icon = icon("heart"))
+    )
+  ),
+  
+  dashboardBody(
+    
+    tags$head(
+      tags$style(HTML("
+    /* --------- typography --------- */
+    .main-header .logo       { font-family: 'Arial', sans-serif; font-size: 18px; }
+    .main-sidebar            { font-family: 'Arial', sans-serif; font-size: 16px; }
+    .content-wrapper,
+    .content-wrapper *       { font-family: 'Arial', sans-serif; font-size: 15px; }
+
+    /* let Font-Awesome keep its glyph font */
+    .fa, .info-box-icon, .info-box-icon > i {
+      font-family: 'FontAwesome' !important;
+    }
+
+
+
+    .content-wrapper { position: relative; }
+  "))
+    ),
+    
+    tabItems(
+      ## Homepage
+      tabItem(tabName = "homepage",
+              
+              # Title
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:5px; margin-bottom:5px"),
+              hr(style = "border-top: 4px solid black; width: 90%; margin-top:5px; margin-bottom:5px"),
+              h2("Welcome to",
+                 style = "text-align: center; font-style: italic; font-size: 35px"),
+              h2("Malta!",
+                 style = "text-align: center; font-style: italic; font-size: 55px"),
+              hr(style = "border-top: 4px solid black; width: 90%; margin-top:5px; margin-bottom:5px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:5px; margin-bottom:5px"),
+              div(p("By Ruoxi Li"), style = "text-align: center;", textOutput(outputId = "currentDate")),
+              div(style = "height: 30px;"),
+              
+              # Info boxes
+              fluidRow(
+                column(
+                  width = 8,
+                  
+                  infoBox(
+                    title     = "General Description",
+                    value     = "Map, Key Facts, and Narrative",
+                    subtitle  = "Learn basic information about Malta!",
+                    icon      = icon("info-circle"), 
+                    color     = "navy",
+                    fill      = TRUE,
+                    width     = NULL
+                  ),
+                  
+                  infoBox(
+                    title     = "Key Demographics",
+                    value     = "Total Population, Education levels, Economic Activities, etc.",
+                    subtitle  = "See charts, graphs, and tables here!",
+                    icon      = icon("users"),
+                    color     = "blue",
+                    fill      = TRUE,
+                    width     = NULL
+                  ),
+                  
+                  infoBox(
+                    title     = "Regional Comparison",
+                    value     = "Comparison with Other Mediterranean Island Nations",
+                    subtitle  = "Check out differences in geography and economy!",
+                    icon      = icon("globe-europe"),
+                    color     = "light-blue",
+                    fill      = TRUE,
+                    width     = NULL
+                  ),
+                  
+                  infoBox(
+                    title     = "SWOT",
+                    value     = "Strengths, Weaknesses, Opportunities, and Threats",
+                    subtitle  = "Evaluation of Malta in a competitive position!",
+                    icon      = icon("chart-bar"),
+                    color     = "teal",
+                    fill      = TRUE,
+                    width     = NULL
+                  )
+                ),
+                
+                column(
+                  width = 4,
+                  img(
+                    src   = "images/Malta_from_space.jpg",
+                    style = "width:100%; height:100%; border-radius:10px;"
+                  )
+                )
+              )
+      ),
+      
+      ## Map Tab
+      tabItem(tabName = "map",
+              h2("Map of Malta",
+                 style = "text-align: center; font-style: italic; font-size: 40px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+              
+              fluidRow(
+                column(width = 8,
+                       box(leafletOutput(outputId = "maltaMap", height = 500), width = NULL),
+                       box(width = NULL,
+                           h4("About Malta's Geography", style = "font-weight: bold;"),
+                           p("Malta is an archipelago located in the central Mediterranean Sea, consisting of three main inhabited islands: Malta (the largest), Gozo, and Comino."),
+                           tags$ul(
+                             tags$li("The Maltese archipelago lies 80 km south of Sicily, 284 km east of Tunisia, and 333 km north of Libya."),
+                             tags$li("The total land area is approximately 316 km² (122 sq mi), making Malta the world's tenth smallest country."),
+                             tags$li("Malta is characterized by low, rocky, flat-to-dissected plains, with many coastal cliffs."),
+                             tags$li("The highest point is Ta' Dmejrek at 253 meters (830 feet) above sea level."),
+                             tags$li("The islands have a Mediterranean climate with mild, rainy winters and hot, dry summers.")
+                           ),
+                           p("Source: Britannica.com, 2025 and Wikipedia, 2025")
+                       )
+                ),
+                column(width = 4,
+                       box(width = NULL,
+                           h4("Key Geographic Features", style = "font-weight: bold;"),
+                           tags$ul(
+                             tags$li(strong("Grand Harbour:"), " One of the most impressive natural harbors in the Mediterranean, located next to the capital city Valletta."),
+                             tags$li(strong("Marsamxett Harbour:"), " Located on the other side of Valletta peninsula from Grand Harbour."),
+                             tags$li(strong("Blue Lagoon:"), " Located on Comino island, famous for its crystal clear waters."),
+                             tags$li(strong("Dwejra Bay:"), " Located on Gozo, formerly home to the Azure Window natural arch (collapsed in 2017)."),
+                             tags$li(strong("Ramla Bay:"), " Gozo's largest sandy beach with distinctive reddish-gold sand.")
+                           ),
+                           img(src = "images/Dwejra_Bay.jpg", 
+                               alt = "Dwejra Bay, Gozo", width = "100%", style = "border-radius: 10px;"),
+                           p("Dwejra Bay in Gozo (By Meg Zimbeck - originally posted to Flickr as Dwejra Bay, Gozo (Malta), CC BY 2.0, https://commons.wikimedia.org/w/index.php?curid=8904307)")
+                       ),
+                       box(width = NULL,
+                           h4("Malta in the Mediterranean Context", style = "font-weight: bold;"),
+                           p("Malta is part of a region known as Southern Europe and is one of several notable Mediterranean island nations:"),
+                           tags$ul(
+                             tags$li(strong("Sicily:"), " The largest Mediterranean island at 25,711 km², located just 80 km north of Malta"),
+                             tags$li(strong("Cyprus:"), " The third-largest Mediterranean island at 9,251 km², located in the eastern Mediterranean"),
+                             tags$li(strong("Crete:"), " The fifth-largest Mediterranean island at 8,450 km², part of Greece")
+                           ),
+                           p("Compared to these larger islands, Malta is much smaller but has one of the highest population densities in the world."),
+                           p("Source: Wikipedia, 2025")
+                       )
+                )
+              )
+      ),
+      
+      ## Key Facts Tab
+      tabItem(tabName = "facts",
+              h2("Key Facts about Malta",
+                 style = "text-align: center; font-style: italic; font-size: 40px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+              tabBox(
+                id = "factsTabset", width = NULL,
+                tabPanel("Geography", 
+                         div(
+                           p("Malta is an archipelago located in the central Mediterranean Sea with several distinctive geographical features:"),
+                           tags$ul(
+                             tags$li("Malta consists of an archipelago of five islands, with only the three largest (Malta, Gozo, and Comino) being inhabited.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("Malta is located about 80 km south of Sicily and 284 km east of Tunisia.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The islands are dominated by limestone formations with steep coastal cliffs indented by bays and coves.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("With a total area of 316 km², Malta is the world's tenth-smallest country by area.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The highest point is Ta' Dmejrek at 253 meters (830 feet) above sea level.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025"))
+                           ),
+
+                         )
+                ),
+                tabPanel("Climate", 
+                         div(
+                           p("Malta enjoys a typical Mediterranean climate:"),
+                           tags$ul(
+                             tags$li("Malta has a Mediterranean climate with hot, dry summers and mild, rainy winters.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("The annual rainfall is approximately 22 inches (550 mm), with over 75% falling between October and March.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("Average annual temperature is in the mid-60s F (about 19°C), with monthly averages ranging from 12°C to 29°C.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("The country experiences several distinctive winds, including the northwesterly (majjistral), northeasterly (grigal), and southeasterly (xlokk).", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025"))
+                           ),
+
+                         )
+                ),
+                tabPanel("Demographics", 
+                         div(
+                           p("Malta has some unique demographic characteristics:"),
+                           tags$ul(
+                             tags$li("Malta is one of the most densely populated countries in the world with approximately 1,265 inhabitants per square kilometer.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The current population is around 542,000 people.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The median age in Malta is 41.1 years, indicating an aging population trend.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Worldometers, 2025")),
+                             tags$li("Approximately 95% of Malta is classified as urban area.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Since 2000, the population has increasingly shifted toward an older demographic.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025"))
+                           ),
+
+                         )
+                ),
+                tabPanel("Economy", 
+                         div(
+                           p("Malta has a diverse and developed economy:"),
+                           tags$ul(
+                             tags$li("Malta has an advanced, high-income economy according to the IMF.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Tourism is a major economic contributor, accounting for approximately 15% of GDP directly.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Other key economic sectors include financial services, online gaming, and manufacturing.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Malta produces only about 20% of its food needs and has limited freshwater supplies.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Malta joined the European Union in 2004 and adopted the Euro in 2008.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("In 2023, Malta's GDP per capita (PPP) was approximately €39,500, well above the EU average.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: European Union, 2025"))
+                           ),
+
+                         )
+                ),
+                tabPanel("Culture", 
+                         div(
+                           p("Malta has a rich cultural heritage:"),
+                           tags$ul(
+                             tags$li("Malta has more than 360 churches across its islands, averaging one church per 1,000 residents.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Roman Catholicism is the state religion, but there is freedom of religious belief.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("Maltese and English are the official languages, with Maltese being the only Semitic language written in Latin script.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("Malta's culture has been influenced by various societies throughout centuries, including Phoenicians, Romans, Arabs, Normans, and British.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The parish church is the architectural and geographic focal point of every Maltese town and village.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025"))
+                           ),
+
+                         )
+                ),
+                tabPanel("History", 
+                         div(
+                           p("Malta has a fascinating history spanning thousands of years:"),
+                           tags$ul(
+                             tags$li("Malta has been inhabited since approximately 5900 BCE.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("The islands were ruled by the Knights of St. John from 1530 to 1798.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Wikipedia, 2025")),
+                             tags$li("Malta was a British colony from 1800 until independence in 1964.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("The island played a crucial strategic role in World War II and was awarded the George Cross for bravery in 1942.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025")),
+                             tags$li("Malta became a republic on December 13, 1974.", 
+                                     style = "margin-bottom: 10px;",
+                                     tags$small("Source: Britannica.com, 2025"))
+                           ),
+
+                         )
+                )
+              )
+      ),
+      
+      ## Narrative section
+      tabItem(tabName = "narrative",
+              box(width = NULL, div(class = "narrative-container",
+                                    h2("Narrative of Malta", style = "text-align: center; margin-bottom: 10px;"),
+                                    hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+                                    
+                                    h3("The Mediterranean Jewel", style = "text-align: center;"),
+                                    p("Malta is a small but vibrant island nation nestled in the heart of the Mediterranean Sea. Located approximately 80 kilometers south of Sicily and 284 kilometers east of Tunisia, this archipelago has played a crucial role in Mediterranean history for thousands of years. (Wikipedia, 2025)"),
+                                    
+                                
+                                    
+                                    h3("A Crossroads of Civilizations", style = "margin-top: 20px;"),
+                                    p("Throughout its history, Malta has been influenced by numerous civilizations. The islands have been inhabited since approximately 5900 BCE, and over the millennia, they've been ruled by Phoenicians, Carthaginians, Romans, Byzantines, Arabs, Normans, the Knights of St. John, the French, and the British. Each of these powers has left an indelible mark on Maltese culture, architecture, language, and cuisine. (Britannica, 2025)"),
+                                    
+                                    p("The Knights of St. John ruled Malta from 1530 to 1798, during which time they built the capital city of Valletta and many of the island's impressive fortifications and churches. The British period, from 1800 to 1964, significantly influenced Malta's administrative, legal, and educational systems, as well as establishing English as an official language alongside Maltese. (Wikipedia, 2025)"),
+                                    
+                                    h3("Modern Malta", style = "margin-top: 20px;"),
+                                    p("Today, Malta is a vibrant, independent republic and a member of the European Union since 2004. With its advanced economy, Malta has transformed from a fortress colony to a modern state with thriving tourism, financial services, online gaming, and manufacturing sectors. (European Union, 2025)"),
+                                    
+                                    p("Despite its small size—just 316 square kilometers—Malta is one of the most densely populated countries in the world. The archipelago consists of three inhabited islands: Malta (the largest), Gozo, and Comino, along with the uninhabited islets of Kemmunett and Filfla. (Britannica, 2025)"),
+                                    
+                                    h3("Natural and Cultural Heritage", style = "margin-top: 20px;"),
+                                    p("Malta boasts a typical Mediterranean climate with hot, dry summers and mild, rainy winters, making it an attractive destination for tourists throughout the year. The islands are characterized by limestone formations and dramatic coastal cliffs indented by numerous bays, coves, and harbors. (Britannica, 2025)"),
+                                    
+                                    p("The Maltese cultural landscape is dominated by the influence of Roman Catholicism, with more than 360 churches across the islands—approximately one church for every 1,000 residents. The parish church serves as the architectural and geographic focal point of every Maltese town and village. (Wikipedia, 2025)"),
+                                    
+                                    p("Malta is home to three UNESCO World Heritage Sites: the megalithic temples (among the oldest free-standing structures in the world), the Ħal Saflieni Hypogeum, and the city of Valletta. These sites, along with numerous other historical and natural attractions, draw visitors from around the world. (Wikipedia, 2025)"),
+                                    
+                                    h3("Challenges and Opportunities", style = "margin-top: 20px;"),
+                                    p("As a small island state, Malta faces certain challenges, including limited natural resources, freshwater scarcity, and environmental pressures from high population density and tourism. The country produces only about 20% of its food needs and must import most of its energy. (Wikipedia, 2025)"),
+                                    
+                                    p("However, Malta's strategic location, multilingual population, and membership in the European Union provide significant opportunities. The country has successfully developed knowledge-based economic sectors and continues to attract investment in areas such as financial services, information technology, and digital innovation. (European Union, 2025)"),
+                                    
+                                    h3("Conclusion", style = "margin-top: 20px;"),
+                                    p("Malta stands as a testament to resilience and adaptation. From its ancient megalithic temples to its modern financial services sector, the country has continuously reinvented itself while preserving its unique cultural heritage. As it faces the challenges of the 21st century, including climate change and regional instability, Malta continues to leverage its strategic position, historical experience, and human capital to secure a prosperous future. (Britannica, 2025)")
+                                    
+              ))
+      ),
+      
+      ## Demographics Tab
+      tabItem(tabName = "demographics",
+              h2("Key Demographics of Malta", style = "text-align: center; font-style: italic; font-size: 40px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+              tabBox(id = "demographicsTabset", height = "500px", width = NULL,
+                     
+                     # Total Population
+                     tabPanel("Population Trends",
+                              fluidRow(
+                                column(width = 4,
+                                       box(width = NULL,
+                                           h4("Population Overview"),
+                                           p("Malta has a current population of approximately 542,000 people, making it one of the most densely populated countries in the world with about 1,265 inhabitants per square kilometer."),
+                                           p("The population has grown steadily since the 1950s, with significant increases during the 1970s and again after Malta joined the European Union in 2004."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                ),
+                                column(width = 8,
+                                       box(width = NULL,
+                                           sliderInput("populationYearRange", "Select Year Range:",
+                                                       min = min(malta_population$Year, na.rm = TRUE),
+                                                       max = max(malta_population$Year, na.rm = TRUE),
+                                                       value = c(min(malta_population$Year, na.rm = TRUE),
+                                                                 max(malta_population$Year, na.rm = TRUE))),
+                                           plotOutput("populationPlot")
+                                       )
+                                )
+                              )
+                     ),
+                     
+                     # Age Structure
+                     tabPanel("Age Structure",
+                              fluidRow(
+                                column(width = 4,
+                                       box(width = NULL,
+                                           h4("Aging Population"),
+                                           p("Malta's population is aging, with a median age of 41.1 years."),
+                                           p("Since 2000, the percentage of the population aged 65 and over has increased from 13.7% to 16.3%, while the proportion of those under 14 years has decreased from 17.2% to 14.8%."),
+                                           p("This demographic shift presents challenges for healthcare, pensions, and workforce development."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                ),
+                                column(width = 8,
+                                       box(width = NULL,
+                                           h4("Population Pyramid (2020)"),
+                                           tags$img(src = "images/population_pyramid.png",
+                                                    style = "width:100%; border-radius:10px;"),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                )
+                              )
+                     ),
+                     
+                     # Urbanization
+                     tabPanel("Urbanization",
+                              fluidRow(
+                                column(width = 4,
+                                       box(width = NULL,
+                                           h4("Urban Population"),
+                                           p("Approximately 95% of Malta is classified as urban area, and this percentage continues to grow each year."),
+                                           p("The majority of Malta's population is concentrated in the northeastern part of the main island, particularly around the capital city of Valletta and the harbor area."),
+                                           p("According to the European Spatial Planning Observation Network, \"the whole territory of Malta constitutes a single urban region.\""),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                ),
+
+                              )
+                     ),
+                     
+                     # Migration
+                     tabPanel("Migration Patterns",
+                              fluidRow(
+                                column(width = 4,
+                                       box(width = NULL,
+                                           h4("Historical Migration"),
+                                           p("Malta has historically been a country of emigration. Between 1946 and the late 1970s, over 140,000 people left Malta, primarily to Australia (57.6%), the UK (22%), Canada (13%), and the United States (7%)."),
+                                           p("Since the mid-1970s, emigration has decreased significantly, and since joining the EU in 2004, Malta has become increasingly attractive to immigrants."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                ),
+                                column(width = 8,
+                                       box(width = NULL,
+                                           h4("Recent Migration Trends"),
+                                           p("In recent years, Malta has become a destination for immigrants from both EU and non-EU countries, particularly from Italy, the United Kingdom, and various Eastern European nations."),
+                                           p("The country has also become a transit point for migration routes from Africa to Europe, creating both challenges and opportunities for Maltese society."),
+                                           p("Rising housing costs have affected both locals and expatriates, leading some foreign workers to relocate to other European countries."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                )
+                              )
+                     )
+              )
+      ),
+      
+      ## Regional Comparison
+      tabItem(tabName = "comparison",
+              h2("Regional Comparison", style = "text-align: center; font-style: italic; font-size: 40px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+              tabBox(id = "comparisonTabset", height = "500px", width = NULL,
+                     
+                     # Geographic Comparison
+                     tabPanel("Geographic Comparison",
+                              fluidRow(
+                                column(width = 6,
+                                       box(width = NULL,
+                                           h4("Mediterranean Island Size Comparison"),
+                                           p("Malta is significantly smaller than other major Mediterranean islands:"),
+                                           tags$ul(
+                                             tags$li(strong("Sicily:"), " 25,711 km² (81 times larger than Malta)"),
+                                             tags$li(strong("Sardinia:"), " 24,090 km² (76 times larger)"),
+                                             tags$li(strong("Cyprus:"), " 9,251 km² (29 times larger)"),
+                                             tags$li(strong("Crete:"), " 8,450 km² (27 times larger)"),
+                                             tags$li(strong("Malta:"), " 316 km²")
+                                           ),
+                                           p("Despite its small size, Malta has a rich history and strategic importance in the Mediterranean region."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                ),
+                                column(width = 6,
+                                       box(width = NULL,
+                                           h4("Population Density Comparison"),
+                                           p("Malta has one of the highest population densities in the world:"),
+                                           tags$ul(
+                                             tags$li(strong("Malta:"), " ~1,265 inhabitants per km²"),
+                                             tags$li(strong("Cyprus:"), " ~130 inhabitants per km²"),
+                                             tags$li(strong("Sicily:"), " ~195 inhabitants per km²")
+                                           ),
+                                           p("This high density creates unique challenges for infrastructure, urban planning, and environmental management."),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                )
+                              ),
+                              fluidRow(
+                                column(width = 12,
+                                       box(width = NULL,
+                                           h4("Comparative Geography"),
+                                           p("While Malta shares the Mediterranean climate with other islands in the region, it has several distinctive features:"),
+                                           tags$ul(
+                                             tags$li("Malta has no permanent rivers or lakes, unlike Sicily or Cyprus."),
+                                             tags$li("Malta's terrain is characterized by low hills with terraced fields, while islands like Crete have significant mountain ranges."),
+                                             tags$li("Malta's coastline is dominated by limestone cliffs and rocky shores, with fewer sandy beaches than larger islands."),
+                                             tags$li("Malta's strategic harbors, particularly Grand Harbour, have played a crucial role in its historical importance.")
+                                           ),
+                                           p("Source: Britannica.com, 2025")
+                                       )
+                                )
+                              )
+                     ),
+                     
+                     # Economic Comparison
+                     tabPanel("Economic Comparison",
+                              fluidRow(
+                                column(width = 6,
+                                       box(width = NULL,
+                                           selectInput("gdpYear", "Select Year for Comparison:", 
+                                                       choices = c(1980, 1990, 2000, 2010, 2020)),
+                                           plotOutput("gdpComparisonPlot")
+                                       )
+                                ),
+                                column(width = 6,
+                                       box(width = NULL,
+                                           h4("Economic Structure"),
+                                           p("Malta's economy differs from other Mediterranean islands in several ways:"),
+                                           tags$ul(
+                                             tags$li("Malta has a more diversified economy than many island states, with strong financial services, online gaming, and IT sectors."),
+                                             tags$li("Tourism accounts for approximately 15% of Malta's GDP directly, which is high but comparable to other Mediterranean destinations."),
+                                             tags$li("Malta's small size has encouraged development of knowledge-based industries rather than agriculture or heavy manufacturing."),
+                                             tags$li("EU membership has provided Malta with significant economic benefits and access to European markets.")
+                                           ),
+                                           p("Source: Wikipedia, 2025")
+                                       )
+                                )
+                              ),
+
+                     ),
+                     
+                     # Life Expectancy Comparison
+                     tabPanel("Life Expectancy",
+                              fluidRow(
+                                column(width = 8,
+                                       box(width = NULL,
+                                           sliderInput("leYearRange", "Select Year Range:",
+                                                       min = 1990, max = 2025, value = c(1990, 2025)),
+                                           plotOutput("leComparisonPlot")
+                                       )
+                                ),
+                                column(width = 4,
+                                       box(width = NULL,
+                                           h4("Health Indicators"),
+                                           p("Life expectancy in Malta has increased steadily over recent decades, broadly following trends in other Mediterranean countries."),
+                                           p("Malta's healthcare system provides universal coverage and is ranked among the better healthcare systems in the world."),
+                                           p("Like other developed countries, Malta faces challenges related to non-communicable diseases, aging population, and rising healthcare costs."),
+                                           p("Source: Worldometers, 2025")
+                                       )
+                                )
+                              )
+                     ),
+                     
+                     # Cultural Comparison
+                     tabPanel("Cultural Comparison",
+                              fluidRow(
+                                column(width = 12,
+                                       box(width = NULL,
+                                           h4("Cultural Heritage"),
+                                           p("Malta shares many cultural elements with other Mediterranean islands, but also has unique features:"),
+                                           tags$ul(
+                                             tags$li(strong("Language:"), " Maltese is the only Semitic language written in Latin script, reflecting Arabic influence combined with Italian vocabulary."),
+                                             tags$li(strong("Religion:"), " Like Sicily and Cyprus, Malta has a strong Christian heritage, but Malta's religious landscape is more homogenous, with over 90% of the population being Roman Catholic."),
+                                             tags$li(strong("Architecture:"), " Malta's built environment reflects diverse influences, from prehistoric megalithic temples to Baroque churches and British colonial buildings."),
+                                             tags$li(strong("Cuisine:"), " Maltese cuisine combines Mediterranean ingredients with influences from North Africa, Sicily, and Britain.")
+                                           ),
+                                           p("Malta's culture reflects its position at the crossroads of Europe, North Africa, and the Middle East, creating a unique blend of influences not found in exactly the same combination elsewhere."),
+                                           p("Source: Wikipedia and Britannica.com, 2025")
+                                       )
+                                )
+                              )
+                     )
+              )
+      ),
+      
+      ## SWOT Analysis
+      tabItem(tabName = "swot",
+              h2("Strengths, Weaknesses, Opportunities, and Threats Analysis", 
+                 style = "text-align: center; font-style: italic; font-size: 40px"),
+              hr(style = "border-top: 2px solid black; width: 90%; margin-top:10px; margin-bottom:20px"),
+              fluidRow(
+                box(title = "Strengths", status = "primary", solidHeader = TRUE, collapsible = TRUE,
+                    fluidRow(box(title = "Strategic Location", status = "primary", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("strength1"))),
+                    fluidRow(box(title = "Tourism Industry", status = "primary", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("strength2"))),
+                    fluidRow(box(title = "Cultural Heritage", status = "primary", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("strength3"))),
+                    fluidRow(box(title = "EU Membership", status = "primary", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("strength4"))),
+                    fluidRow(box(title = "Multilingual Population", status = "primary", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("strength5")))
+                ),
+                box(title = "Opportunities", status = "success", solidHeader = TRUE, collapsible = TRUE,
+                    fluidRow(box(title = "Digital Economy", status = "success", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("opportunity1"))),
+                    fluidRow(box(title = "Sustainable Tourism", status = "success", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("opportunity2"))),
+                    fluidRow(box(title = "Blue Economy", status = "success", solidHeader = TRUE, 
+                                 collapsible = TRUE, width = 11, collapsed = TRUE,
+                                 textOutput("opportunity3"))),
+                    fluidRow(box(title = "Education Hub", status = "success", solidHeader = TRUE, 
+                                 collapsible = TRUE, width = 11, collapsed = TRUE,
+                                 textOutput("opportunity4"))),
+                    fluidRow(box(title = "Regional Cooperation", status = "success", solidHeader = TRUE, 
+                                 collapsible = TRUE, width = 11, collapsed = TRUE,
+                                 textOutput("opportunity5")))
+                ),
+              ),
+              fluidRow(
+                box(title = "Weaknesses", status = "warning", solidHeader = TRUE, collapsible = TRUE,
+                    fluidRow(box(title = "Limited Natural Resources", status = "warning", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("weakness1"))),
+                    fluidRow(box(title = "Population Density", status = "warning", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("weakness2"))),
+                    fluidRow(box(title = "Environmental Challenges", status = "warning", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("weakness3"))),
+                    fluidRow(box(title = "Economic Vulnerability", status = "warning", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("weakness4"))),
+                    fluidRow(box(title = "Infrastructure Pressures", status = "warning", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("weakness5")))
+                ),
+                box(title = "Threats", status = "danger", solidHeader = TRUE, collapsible = TRUE,
+                    fluidRow(box(title = "Climate Change", status = "danger", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("threat1"))),
+                    fluidRow(box(title = "Economic Dependency", status = "danger", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("threat2"))),
+                    fluidRow(box(title = "Regional Competition", status = "danger", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("threat3"))),
+                    fluidRow(box(title = "Demographic Challenges", status = "danger", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("threat4"))),
+                    fluidRow(box(title = "Geopolitical Instability", status = "danger", solidHeader = TRUE, 
+                                 collapsible = TRUE, collapsed = TRUE, width = 11,
+                                 textOutput("threat5")))
+                ),
+              ),
+      ),
+      
+      ## References ---------------------------------------------------------------
+      tabItem(
+        tabName = "thanks",
+        h2("References and Special Thanks",
+           style = "text-align:center; font-style:italic; font-size:40px"),
+        hr(style = "border-top:2px solid black; width:90%; margin-top:10px; margin-bottom:20px"),
+        
+        tabBox(id = "thanksTabset", width = NULL,
+               
+               # -----------------------------------------------------------------------
+               tabPanel("Data Sources",
+                        h4("Primary Data Sources"),
+                        tags$ul(
+                          tags$li(tags$a("Britannica: Malta",                 href = "https://www.britannica.com/place/Malta",               target = "_blank")),
+                          tags$li(tags$a("World Bank Open Data",              href = "https://data.worldbank.org/",                           target = "_blank")),
+                          tags$li(tags$a("Worldometers: Malta Population",    href = "https://www.worldometers.info/world-population/malta-population/", target = "_blank")),
+                          tags$li(tags$a("European Union: Malta Country Profile", href = "https://european-union.europa.eu/principles-countries-history/eu-countries/malta_en", target = "_blank"))
+                        ),
+                        
+                        h4("Secondary Data & Image Sources"),
+                        tags$ul(
+                          tags$li(tags$a("CIA World Factbook: Malta",     href = "https://www.cia.gov/the-world-factbook/countries/malta/", target = "_blank")),
+                          tags$li(tags$a("Statista: Tourism in Malta",    href = "https://www.statista.com/topics/7091/travel-and-tourism-in-malta/", target = "_blank")),
+                          tags$li(tags$a("National Statistics Office of Malta", href = "https://nso.gov.mt/", target = "_blank")),
+                          tags$li("Wikimedia Commons photographs (Dwejra Bay, population pyramid, Malta from space) – each image is in the public domain or under a compatible Creative Commons licence; authors credited in the relevant captions.")
+                        )
+               ),
+               
+               # -----------------------------------------------------------------------
+               tabPanel("Technical References",
+                        h4("R Packages & Documentation"),
+                        tags$ul(
+                          tags$li(tags$a("shiny",            href = "https://shiny.posit.co/",                    target = "_blank")),
+                          tags$li(tags$a("shinydashboard",   href = "https://rstudio.github.io/shinydashboard/", target = "_blank")),
+                          tags$li(tags$a("leaflet for R",    href = "https://rstudio.github.io/leaflet/",        target = "_blank")),
+                          tags$li(tags$a("ggplot2",          href = "https://ggplot2.tidyverse.org/",            target = "_blank")),
+                          tags$li(tags$a("tidyverse",        href = "https://www.tidyverse.org/",                target = "_blank")),
+                          tags$li(tags$a("DT",               href = "https://rstudio.github.io/DT/",            target = "_blank")),
+                          tags$li(tags$a("readr",            href = "https://readr.tidyverse.org/",             target = "_blank"))
+                        ),
+                        
+                        h4("Learning Resources"),
+                        tags$ul(
+                          tags$li(tags$a("Mastering Shiny (Hadley Wickham)", href = "https://mastering-shiny.org/",  target = "_blank"))
+                        )
+               ),
+               
+               # -----------------------------------------------------------------------
+               tabPanel("Special Thanks",
+                        h4("Project Support"),
+                        tags$ul(
+                          tags$li("Professor Haviland Wright, Ph.D."),
+                          tags$li("Teaching Assistant Vajinder Kaur"),
+                          tags$li("The Shiny & R open-source community"),
+                          tags$li("Font Awesome for iconography")
+                        ),
+                        
+                        h4("Large-Language-Model Assistance"),
+                        tags$ul(
+                          tags$li("GPT-o3 (OpenAI) – code review & text polishing"),
+                          tags$li("Claude 3.7 Sonnet (Anthropic) – content suggestions & code review")
+                        ),
+                        
+                        h4("Image Credits"),
+                        p("All externally sourced images are from Wikimedia Commons and are either in the public domain or used under the appropriate Creative Commons licences. Local photographs (e.g., population_pyramid.png
+                          ) are stored in the app’s \"www\" directory.")
+               )
+        )
+      )
+    )
+  )
+)
+
+# Server function
+server <- function(input, output, session) {
+  
+  # Homepage date
+  output$currentDate <- renderText({
+    format(Sys.Date(), "%Y-%m-%d, %A")
+  })
+  
+  # Malta Map
+  output$maltaMap <- renderLeaflet({
+    leaflet() %>%
+      addProviderTiles(providers$Esri.WorldStreetMap) %>%
+      # Main Malta island
+      addMarkers(lng = 14.4137, lat = 35.9049, popup = HTML("<b>Valletta</b><br>Capital city of Malta")) %>%
+      addMarkers(lng = 14.4036, lat = 35.8856, popup = HTML("<b>Grand Harbour</b><br>Natural harbor and historical port")) %>%
+      addMarkers(lng = 14.3754, lat = 35.8884, popup = HTML("<b>Mdina</b><br>Former capital and medieval walled city")) %>%
+      # Gozo markers
+      addMarkers(lng = 14.2435, lat = 36.0467, popup = HTML("<b>Victoria (Rabat)</b><br>Capital of Gozo")) %>%
+      addMarkers(lng = 14.2577, lat = 36.0532, popup = HTML("<b>Ramla Bay</b><br>Distinctive red-sand beach on Gozo")) %>%
+      # Comino marker
+      addMarkers(lng = 14.3425, lat = 36.0104, popup = HTML("<b>Blue Lagoon</b><br>Crystal clear waters on Comino island")) %>%
+      # Circle for Malta
+      addCircles(lng = 14.4137, lat = 35.9049, weight = 1, radius = 10000,
+                 color = "blue", fillColor = "lightblue", fillOpacity = 0.2, 
+                 popup = HTML("Malta Island")) %>%
+      # Circle for Gozo
+      addCircles(lng = 14.2435, lat = 36.0467, weight = 1, radius = 5000,
+                 color = "green", fillColor = "lightgreen", fillOpacity = 0.2, 
+                 popup = HTML("Gozo Island")) %>%
+      # Circle for Comino
+      addCircles(lng = 14.3425, lat = 36.0104, weight = 1, radius = 1000,
+                 color = "orange", fillColor = "orange", fillOpacity = 0.2, 
+                 popup = HTML("Comino Island")) %>%
+      # Set the view centered between the islands
+      setView(lng = 14.35, lat = 35.95, zoom = 10)
+  })
+  
+output$populationPlot <- renderPlot({
+  total_pop <- malta_population %>%
+    group_by(Year) %>%
+    summarize(Total = sum(Value, na.rm = TRUE)) %>%
+    filter(Year >= input$populationYearRange[1],
+           Year <= input$populationYearRange[2])
+
+  ggplot(total_pop, aes(x = Year, y = Total)) +
+    geom_line(size = 1.5, color = "navy") +
+    geom_point(size = 3, color = "navy") +
+    labs(title = "Malta Total Population",
+         x = "Year", y = "Population") +
+    scale_y_continuous(labels = scales::comma) +
+    theme_minimal()
+})
+  
+  
+  # Regional comparison plots
+  output$gdpComparisonPlot <- renderPlot({
+    filtered_data <- mediterranean_gdp %>%
+      filter(Year == input$gdpYear)
+    
+    ggplot(filtered_data, aes(x = reorder(Country, GDP), y = GDP, fill = Country)) +
+      geom_bar(stat = "identity") +
+      coord_flip() +
+      theme_minimal() +
+      labs(title = paste("GDP Comparison in", input$gdpYear), 
+           x = "Country", 
+           y = "GDP (billion USD)") +
+      scale_fill_brewer(palette = "Set2")
+  })
+  
+  output$tourismGdpPlot <- renderPlot({
+    ggplot(tourism_data, aes(x = reorder(Country, Tourism_GDP_Percent), y = Tourism_GDP_Percent, fill = Country)) +
+      geom_bar(stat = "identity") +
+      coord_flip() +
+      theme_minimal() +
+      labs(title = "Tourism as Percentage of GDP (Mediterranean Countries)", 
+           x = "Country", 
+           y = "Tourism (% of GDP)") +
+      scale_fill_brewer(palette = "Set3")
+  })
+  
+  output$leComparisonPlot <- renderPlot({
+    filtered_data <- mediterranean_le %>%
+      filter(Year >= input$leYearRange[1], Year <= input$leYearRange[2])
+    
+    ggplot(filtered_data, aes(x = Year, y = Value, color = Country, group = Country)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 3) +
+      theme_minimal() +
+      labs(title = "Life Expectancy Comparison", 
+           x = "Year", 
+           y = "Life Expectancy (years)") +
+      scale_color_brewer(palette = "Set1")
+  })
+  
+  # SWOT Analysis text outputs
+  # Strengths
+  output$strength1 <- renderText("Malta's strategic location in the central Mediterranean Sea, at the crossroads between Europe, North Africa, and the Middle East, has historically made it a vital hub for trade, maritime activities, and geopolitical influence. This position continues to provide economic and diplomatic advantages in the modern era.")
+  output$strength2 <- renderText("Tourism is a cornerstone of Malta's economy, contributing approximately 15% directly to GDP. The country's rich historical sites, Mediterranean climate, beautiful coastlines, and vibrant cultural scene attract millions of visitors annually, supporting a robust hospitality and service sector.")
+  output$strength3 <- renderText("Malta possesses an extraordinary cultural heritage spanning over 7,000 years, including prehistoric megalithic temples (among the oldest freestanding structures in the world), the UNESCO World Heritage city of Valletta, and a unique fusion of European and Mediterranean influences that create a distinctive national identity and cultural tourism draw.")
+  output$strength4 <- renderText("As a member of the European Union since 2004 and the Eurozone since 2008, Malta benefits from access to the European single market, EU funds for development projects, and participation in European political institutions, enhancing its economic stability and international standing despite its small size.")
+  output$strength5 <- renderText("The Maltese population is highly multilingual, with most citizens speaking Maltese and English (both official languages), and many also fluent in Italian and other European languages. This linguistic versatility is a significant advantage for international business, tourism, and educational services.")
+  
+  # Weaknesses
+  output$weakness1 <- renderText("Malta faces significant natural resource constraints, producing only about 20% of its food needs and having limited freshwater supplies. This dependency on imports for essential resources creates economic vulnerabilities and challenges for self-sufficiency.")
+  output$weakness2 <- renderText("With approximately 1,265 inhabitants per square kilometer, Malta is one of the most densely populated countries in the world. This high density creates pressures on housing, transportation, waste management, and public services, as well as contributing to environmental degradation.")
+  output$weakness3 <- renderText("Malta faces numerous environmental challenges, including coastal erosion, habitat loss, water scarcity, and air pollution. These issues are exacerbated by the limited land area, high population density, and intensive tourism, threatening both the natural environment and quality of life.")
+  output$weakness4 <- renderText("Despite diversification efforts, Malta's economy remains vulnerable to external shocks due to its small size, openness, and dependence on sectors like tourism and financial services. Economic downturns in major source markets or regulatory changes in international finance can have outsized impacts on the Maltese economy.")
+  output$weakness5 <- renderText("Malta's rapid economic and population growth has placed significant strain on its infrastructure, including roads, utilities, waste management systems, and public transportation. These pressures contribute to congestion, pollution, and decreased quality of life without substantial ongoing investment.")
+  
+  # Opportunities
+  output$opportunity1 <- renderText("Malta has the potential to expand its digital economy by leveraging its existing strengths in online gaming, financial technology, and IT services. With continued investment in digital infrastructure, education, and regulatory frameworks, Malta could become a leading European tech hub.")
+  output$opportunity2 <- renderText("By developing and promoting sustainable tourism practices, Malta can address concerns about overtourism while preserving its natural and cultural heritage. Focusing on quality over quantity and distributing tourism beyond peak seasons could enhance long-term sustainability of this vital sector.")
+  output$opportunity3 <- renderText("Malta's extensive maritime territory and strategic location offer opportunities to develop a comprehensive blue economy strategy, including sustainable fisheries, maritime transport, renewable marine energy, and marine biotechnology, creating new economic sectors that leverage the surrounding Mediterranean Sea.")
+  output$opportunity4 <- renderText("Building on its English-language proficiency, quality educational institutions, and attractive Mediterranean location, Malta has the opportunity to expand its role as an international education hub, attracting students for language courses, specialized programs, and academic research.")
+  output$opportunity5 <- renderText("Malta can strengthen its position by developing deeper cooperation with other Mediterranean countries on shared challenges like migration, environmental protection, maritime security, and economic development, potentially serving as a bridge between Europe, North Africa, and the Middle East.")
+  
+  # Threats
+  output$threat1 <- renderText("Climate change poses an existential threat to Malta as a Mediterranean island nation, with rising sea levels threatening coastal areas, increasing temperatures affecting tourism and agriculture, and more frequent extreme weather events creating infrastructure challenges and water scarcity issues.")
+  output$threat2 <- renderText("Malta's reliance on tourism, financial services, and other specific sectors creates economic vulnerabilities if these industries face disruption. Global economic downturns, changes in travel patterns, or international regulatory shifts could significantly impact key revenue sources.")
+  output$threat3 <- renderText("Malta faces increasing competition from other Mediterranean destinations for tourism, foreign investment, and skilled professionals. Maintaining competitiveness requires continuous improvement in infrastructure, services, and regulatory environments as other countries enhance their offerings.")
+  output$threat4 <- renderText("Malta's aging population, changing family structures, and migration patterns create demographic challenges for workforce sustainability, healthcare systems, and social services. These shifts may require significant policy adjustments and increased public expenditure to maintain social cohesion and economic vitality.")
+  output$threat5 <- renderText("Malta's location in the Mediterranean means it is affected by geopolitical tensions in North Africa and the Middle East, including irregular migration flows, regional conflicts, and energy security concerns. These external factors can impact Malta's security, economy, and social fabric despite being beyond its direct control.")
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
